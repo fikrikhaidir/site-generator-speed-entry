@@ -3,11 +3,10 @@
 import { closeSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { setFlagsFromString } from 'node:v8';
 
-// One CPU and a few hundred milliseconds of work: no incremental marking, no parallel scavenging and no optimizing
+// One CPU and a few hundred milliseconds of work: no incremental marking and no optimizing
 // compiler (its compile time costs more than it saves on a run this short). Set before solve.js is loaded.
 setFlagsFromString('--no-incremental-marking');
 setFlagsFromString('--no-opt');
-setFlagsFromString('--no-parallel-scavenge');
 
 const { run } = (await import(new URL('./solve.js', import.meta.url).href)) as { run: (input: unknown) => unknown };
 
