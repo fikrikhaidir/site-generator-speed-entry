@@ -761,6 +761,7 @@ const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 
 function cardOf(s) {
   const date = s.data.date;
+  let minutes = 0;
   return {
     title: s.data.title,
     url: s.url,
@@ -768,7 +769,11 @@ function cardOf(s) {
     date_long: date === undefined ? '' : longDate(date),
     summary: s.data.summary ?? '',
     excerpt: s.excerpt,
-    reading_minutes: Math.max(1, Math.ceil(wordsOf(s.body) / 200)),
+    // Counted on first read: a page no template reads the minutes of never pays for its words.
+    get reading_minutes() {
+      if (minutes === 0) minutes = Math.max(1, Math.ceil(wordsOf(s.body) / 200));
+      return minutes;
+    },
     tags: s.tagRefs.map((t) => ({ name: t.name, slug: t.slug, url: t.url })),
   };
 }
@@ -948,7 +953,9 @@ function build(input) {
       date_long: page.date_long,
       summary: page.summary,
       excerpt: page.excerpt,
-      reading_minutes: page.reading_minutes,
+      get reading_minutes() {
+        return page.reading_minutes;
+      },
       tags: page.tags,
       slug: s.slug,
       content: s.html,
