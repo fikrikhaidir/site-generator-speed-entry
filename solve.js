@@ -6,12 +6,23 @@ const hasOwn = Object.hasOwn;
 
 // ---------------------------------------------------------------- text
 
-const ESC_TEST = /[&<>"']/;
+const ESC_G = /[&<>"']/g;
 
 /** HTML escape: & < > " ' only. Returns the argument itself when nothing needs escaping. */
 function esc(s) {
-  if (!ESC_TEST.test(s)) return s;
-  return s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+  ESC_G.lastIndex = 0;
+  if (!ESC_G.test(s)) return s;
+  let i = ESC_G.lastIndex - 1;
+  let last = 0;
+  let out = '';
+  for (;;) {
+    const c = s.charCodeAt(i);
+    out += s.slice(last, i) + (c === 38 ? '&amp;' : c === 60 ? '&lt;' : c === 62 ? '&gt;' : c === 34 ? '&quot;' : '&#39;');
+    last = i + 1;
+    if (!ESC_G.test(s)) break;
+    i = ESC_G.lastIndex - 1;
+  }
+  return out + s.slice(last);
 }
 
 const MARKS = /\p{M}/gu;
@@ -552,6 +563,67 @@ function parseTemplate(name, src) {
   return root.body;
 }
 
+/**
+ * Marks each template with what an include of it depends on: `free`, the names it reads that no loop of its own binds
+ * (through its includes too), `height`, how many includes deep it nests, and `memo`, whether its output may be reused
+ * for the same values of those names (no include cycle, and no read of `loop`, whose object changes under it).
+ */
+function analyze(templates) {
+  const seen = new Map();
+  const visit = (name) => {
+    const nodes = templates.get(name);
+    if (nodes === undefined) return null;
+    const had = seen.get(name);
+    if (had !== undefined) return had;
+    const info = { visiting: true, cyclic: false, free: [], height: 0, memo: false, cache: new Map() };
+    seen.set(name, info);
+    const free = new Set();
+    let height = 0;
+    const walk = (list, bound) => {
+      for (const n of list) {
+        switch (n.kind) {
+          case 1:
+          case 2:
+            if (!bound.has(n.path[0])) free.add(n.path[0]);
+            break;
+          case 3:
+            if (!bound.has(n.path[0])) free.add(n.path[0]);
+            walk(n.then, bound);
+            if (n.else !== null) walk(n.else, bound);
+            break;
+          case 4: {
+            if (!bound.has(n.path[0])) free.add(n.path[0]);
+            const inner = new Set(bound);
+            inner.add(n.name);
+            inner.add('loop');
+            walk(n.body, inner);
+            break;
+          }
+          case 5: {
+            const sub = visit(n.name);
+            if (sub === null) {
+              height = Math.max(height, 1);
+              break;
+            }
+            if (sub.visiting || sub.cyclic) info.cyclic = true;
+            height = Math.max(height, 1 + sub.height);
+            for (const f of sub.free) if (!bound.has(f)) free.add(f);
+            break;
+          }
+        }
+      }
+    };
+    walk(nodes, new Set());
+    info.free = [...free].sort();
+    info.height = height;
+    info.memo = !info.cyclic && !free.has('loop');
+    info.visiting = false;
+    nodes.info = info;
+    return info;
+  };
+  for (const name of templates.keys()) visit(name);
+}
+
 // A scope is the root { vars, parent: null } or a loop frame { name, val, loop, parent, vars: undefined }.
 function lookup(scope, path) {
   const first = path[0];
@@ -594,6 +666,29 @@ function truthy(v) {
   return v !== undefined && v !== null && v !== false && v !== '' && v !== 0;
 }
 
+/** The value a free name resolves to in `scope` (its first name only), undefined when no scope holds it. */
+function lookupName(scope, name) {
+  let s = scope;
+  for (;;) {
+    if (s === null) return undefined;
+    if (s.vars !== undefined) return hasOwn(s.vars, name) ? s.vars[name] : undefined;
+    if (name === 'loop') return s.loop;
+    if (name === s.name) return s.val;
+    s = s.parent;
+  }
+}
+
+// The escaped form of each string a template writes, so a title written on every page is escaped once.
+const escMemo = new Map();
+function escVar(v) {
+  let r = escMemo.get(v);
+  if (r === undefined) {
+    r = esc(v);
+    if (escMemo.size < 200000) escMemo.set(v, r);
+  }
+  return r;
+}
+
 function renderNodes(nodes, scope, templates, depth) {
   let out = '';
   for (let q = 0; q < nodes.length; q++) {
@@ -604,7 +699,7 @@ function renderNodes(nodes, scope, templates, depth) {
         break;
       case 1: {
         const v = lookup(scope, n.path);
-        out += esc(typeof v === 'string' ? v : textOf(v));
+        out += escVar(typeof v === 'string' ? v : textOf(v));
         break;
       }
       case 2: {
@@ -634,7 +729,33 @@ function renderNodes(nodes, scope, templates, depth) {
       }
       case 5: {
         const t = templates.get(n.name);
-        if (t !== undefined && depth < INCLUDE_DEPTH) out += renderNodes(t, scope, templates, depth + 1);
+        if (t === undefined || depth >= INCLUDE_DEPTH) break;
+        const info = t.info;
+        if (info !== undefined && info.memo && depth + 1 + info.height <= INCLUDE_DEPTH) {
+          // The output depends only on the values its free names resolve to: reuse it when they are the same.
+          const free = info.free;
+          const k = free.length;
+          let m = info.cache;
+          let r;
+          if (k === 0) r = m.get(m);
+          else {
+            for (let i = 0; i < k - 1; i++) {
+              const key = lookupName(scope, free[i]);
+              let next = m.get(key);
+              if (next === undefined) {
+                next = new Map();
+                m.set(key, next);
+              }
+              m = next;
+            }
+            r = m.get(lookupName(scope, free[k - 1]));
+          }
+          if (r === undefined) {
+            r = renderNodes(t, scope, templates, depth + 1);
+            m.set(k === 0 ? m : lookupName(scope, free[k - 1]), r);
+          }
+          out += r;
+        } else out += renderNodes(t, scope, templates, depth + 1);
         break;
       }
     }
@@ -675,6 +796,7 @@ function build(input) {
       report.push(err.message);
     }
   }
+  analyze(templates);
   const base = input.site.base_url.replace(/\/+$/, '');
 
   // 1. sources
