@@ -415,7 +415,7 @@ function renderMarkdown(src, env) {
     } else if (c === 62) {
       let text = '';
       let any = false;
-      while (i < nl && lines[i].charCodeAt(0) === 62) {
+      while (i < nl && lines[i].startsWith(">")) {
         const l = lines[i++];
         const t = trimLine(l.length > 1 && l.charCodeAt(1) === 32 ? l.slice(2) : l.slice(1));
         if (t !== '') {
