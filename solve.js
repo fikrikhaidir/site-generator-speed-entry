@@ -54,22 +54,10 @@ function longDate(date) {
 }
 
 /** The count of runs of non-\s characters. */
+const WORD = /\S+/g;
 function wordsOf(text) {
-  const n = text.length;
-  let words = 0;
-  let inWord = false;
-  for (let i = 0; i < n; i++) {
-    const c = text.charCodeAt(i);
-    let ws;
-    if (c < 128) ws = c === 32 || (c >= 9 && c <= 13);
-    else ws = c === 160 || c === 5760 || (c >= 8192 && c <= 8202) || c === 8232 || c === 8233 || c === 8239 || c === 8287 || c === 12288 || c === 65279;
-    if (ws) inWord = false;
-    else if (!inWord) {
-      inWord = true;
-      words++;
-    }
-  }
-  return words;
+  const m = text.match(WORD);
+  return m === null ? 0 : m.length;
 }
 
 const byCodeUnits = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -461,6 +449,9 @@ function renderMarkdown(src, env) {
     if (excerpt === null) excerpt = inl;
     html += `<p>${inl}</p>\n`;
   }
+  // Flat strings keep the heap small: a rope of thousands of pieces costs the collector far more than its text.
+  if (html.length > 0) html.charCodeAt(0);
+  if (excerpt !== null && excerpt.length > 0) excerpt.charCodeAt(0);
   return { html, toc, excerpt: excerpt ?? '' };
 }
 
@@ -944,7 +935,9 @@ function build(input) {
     vars.site = site;
     vars.tags = allTags;
     vars.recent = recent;
-    return renderNodes(nodes, { vars, parent: null }, templates, 0);
+    const page = renderNodes(nodes, { vars, parent: null }, templates, 0);
+    if (page.length > 0) page.charCodeAt(0);
+    return page;
   };
   for (const s of sources) {
     const page = cards.get(s);
